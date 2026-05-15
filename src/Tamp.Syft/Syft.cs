@@ -64,11 +64,33 @@ public static class Syft
         };
     }
 
+    // ---- Object-init overloads (TAM-161) ----
+    // Parallel surface to the fluent verbs above. Both styles produce identical
+    // CommandPlans; fluent stays canonical in docs and `tamp init` templates.
+    //
+    //     Syft.Scan(syft, new() { DirectorySource = ".", OutputCycloneDxJson = { sbom } });
+    //
+    // is equivalent to:
+    //
+    //     Syft.Scan(syft, s => s.SetDirectorySource(".").AddOutputCycloneDxJson(sbom));
+    public static CommandPlan Scan(Tool tool, SyftScanSettings settings) => Plan(tool, settings);
+    public static CommandPlan Convert(Tool tool, SyftConvertSettings settings) => Plan(tool, settings);
+    public static CommandPlan Attest(Tool tool, SyftAttestSettings settings) => Plan(tool, settings);
+    public static CommandPlan Version(Tool tool, SyftVersionSettings settings) => Plan(tool, settings);
+    public static CommandPlan CatalogerList(Tool tool, SyftCatalogerListSettings settings) => Plan(tool, settings);
+
     private static CommandPlan Run<T>(Tool tool, Action<T>? configure) where T : SyftSettingsBase, new()
     {
         if (tool is null) throw new ArgumentNullException(nameof(tool));
         var s = new T();
         configure?.Invoke(s);
         return s.ToCommandPlan(tool);
+    }
+
+    private static CommandPlan Plan<T>(Tool tool, T settings) where T : SyftSettingsBase
+    {
+        if (tool is null) throw new ArgumentNullException(nameof(tool));
+        if (settings is null) throw new ArgumentNullException(nameof(settings));
+        return settings.ToCommandPlan(tool);
     }
 }
