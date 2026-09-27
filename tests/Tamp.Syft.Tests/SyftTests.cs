@@ -31,6 +31,40 @@ public sealed class SyftTests
             plan.Arguments[IndexOf(plan.Arguments, "-o") + 1]);
     }
 
+    // ─── #5: absolute dir sources are emitted relative (syft 1.x resolver fails on absolute
+    //         paths under a Windows junction — "could not evaluate root … symlinks") ──────────
+
+    [Fact]
+    public void NormalizeDirSource_Rewrites_Absolute_Dir_To_Relative()
+    {
+        var baseDir = System.IO.Path.GetFullPath("nds-base");            // absolute, OS-appropriate
+        var target = System.IO.Path.Combine(baseDir, "child");          // absolute child of base
+        var result = SyftScanSettings.NormalizeDirSource("dir:" + target, baseDir);
+        Assert.Equal("dir:child", result);
+        Assert.False(System.IO.Path.IsPathRooted(result.Substring("dir:".Length)));
+    }
+
+    [Theory]
+    [InlineData("dir:.")]                         // already relative
+    [InlineData("dir:sub/dir")]                   // already relative
+    [InlineData("registry:alpine:latest")]        // different scheme
+    [InlineData("alpine:latest")]                 // raw image ref
+    public void NormalizeDirSource_Leaves_NonAbsolute_Dir_And_Other_Schemes_Unchanged(string source)
+        => Assert.Equal(source, SyftScanSettings.NormalizeDirSource(source, System.IO.Path.GetFullPath(".")));
+
+    [Fact]
+    public void Scan_Absolute_Directory_Source_Is_Emitted_Relative_In_The_Plan()
+    {
+        // SetDirectorySource stores dir:<abs>; the plan must emit it relative so syft resolves it.
+        var absDir = System.IO.Path.GetFullPath("scan-target-under-cwd");
+        var plan = Syft.Scan(FakeTool(), s => s
+            .SetDirectorySource(absDir)
+            .AddOutputCycloneDxJson("sbom.cdx.json"));
+        var src = plan.Arguments.First(a => a.StartsWith("dir:", StringComparison.Ordinal));
+        Assert.False(System.IO.Path.IsPathRooted(src.Substring("dir:".Length)),
+            $"expected a relative dir source, got '{src}'");
+    }
+
     [Fact]
     public void Scan_File_Source()
     {

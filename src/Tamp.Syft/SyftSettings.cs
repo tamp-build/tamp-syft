@@ -15,7 +15,13 @@ public abstract class SyftSettingsBase
     /// <summary>Profile(s) to apply from the config (<c>--profile</c>).</summary>
     public List<string> Profiles { get; } = new();
 
-    /// <summary>Quiet mode (<c>-q / --quiet</c>) — suppresses all logging output.</summary>
+    /// <summary>
+    /// Quiet mode (<c>-q / --quiet</c>) — suppresses <b>all</b> syft logging output.
+    /// <b>Caveat:</b> syft has no "errors-only" level, so <c>-q</c> also hides syft's own error
+    /// message on failure — a failed scan then exits non-zero with no explanation (the SBOM is just
+    /// 0 bytes). Leave <see cref="Quiet"/> off (or run once without it) when you need to diagnose a
+    /// failure; Tamp's per-target output capture then surfaces syft's stderr on a non-zero exit.
+    /// </summary>
     public bool Quiet { get; set; }
 
     /// <summary>Verbosity level (<c>-v</c>, <c>-vv</c>). 0 = none, 1 = info, 2 = debug. Range validated.</summary>
@@ -144,6 +150,31 @@ public sealed class SyftScanSettings : SyftSettingsBase
 
     protected override IEnumerable<string> Verb => new[] { "scan" };
 
+    /// <summary>
+    /// syft 1.x's directory resolver fails on an <b>absolute</b> path whose root traverses a Windows
+    /// reparse point (a junction/symlink — e.g. a repo mapped under <c>C:\repos</c>): it reports
+    /// <c>could not evaluate root … symlinks: The system cannot find the path specified</c> and produces
+    /// a <b>0-byte SBOM + exit 1</b>. Emitting the <c>dir:</c> source <b>relative</b> to the working
+    /// directory sidesteps it (syft resolves it fine). Only rewrites a <c>dir:</c> source whose path is
+    /// rooted and can be relativized on the same drive; anything else (already relative, other drive,
+    /// non-<c>dir:</c> scheme, raw image ref) is returned unchanged. (tamp-syft#5)
+    /// </summary>
+    internal static string NormalizeDirSource(string source, string? workingDirectory)
+    {
+        const string scheme = "dir:";
+        if (source is null || !source.StartsWith(scheme, System.StringComparison.Ordinal)) return source!;
+        var path = source.Substring(scheme.Length);
+        if (path.Length == 0 || !System.IO.Path.IsPathRooted(path)) return source;   // empty or already relative
+        var baseDir = string.IsNullOrEmpty(workingDirectory) ? System.Environment.CurrentDirectory : workingDirectory!;
+        string rel;
+        try { rel = System.IO.Path.GetRelativePath(baseDir, path); }
+        catch { return source; }
+        // GetRelativePath returns a rooted path when there's no common base (e.g. a different drive):
+        // relativizing wouldn't help there, so keep the original.
+        if (string.IsNullOrEmpty(rel) || System.IO.Path.IsPathRooted(rel)) return source;
+        return scheme + rel;
+    }
+
     protected override void AppendArguments(List<string> args)
     {
         if (string.IsNullOrEmpty(Source))
@@ -156,7 +187,7 @@ public sealed class SyftScanSettings : SyftSettingsBase
                 $"Scope must be one of 'squashed', 'all-layers', 'deep-squashed'; got '{Scope}'.");
 
         // Positional source comes first per `syft scan [SOURCE] [flags]`.
-        args.Add(Source!);
+        args.Add(NormalizeDirSource(Source!, WorkingDirectory));
 
         foreach (var o in Outputs) { args.Add("-o"); args.Add(o); }
         foreach (var f in From) { args.Add("--from"); args.Add(f); }

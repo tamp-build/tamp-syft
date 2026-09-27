@@ -7,6 +7,16 @@ versions follow [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-09-27
+
+### Fixed
+
+- **Absolute directory sources now scan correctly under Windows junctions/symlinks** ([#5](https://github.com/tamp-build/tamp-syft/issues/5)). syft 1.x's directory resolver fails on an absolute path whose root traverses a reparse point (e.g. a repo mapped under `C:\repos`) — `could not evaluate root … symlinks: The system cannot find the path specified` — producing a **0-byte SBOM + exit 1**. `syft scan` now emits a `dir:` source with an absolute path **relative to the working directory**, which syft resolves fine. Only rewrites relativizable `dir:` sources; relative sources, other-drive paths, other schemes, and image refs are untouched. A relative source (`dir:.`) always worked and is unchanged.
+
+### Changed
+
+- **Documented that `Quiet` (`-q`) also hides syft's failure diagnostics.** syft has no errors-only log level, so a failed scan under `SetQuiet(true)` exits non-zero with no message (just a 0-byte SBOM). The XML doc now says so and points at running without `Quiet` (Tamp's per-target capture then surfaces syft's stderr on non-zero exit).
+
 ## [0.1.1] — 2026-09-27
 
 ### Added
