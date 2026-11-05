@@ -135,6 +135,101 @@ For a Tauri-based desktop project like DasBook, expect a similar mix — Rust cr
 - `Syft.CatalogerList(tool)` — print available catalogers + config
 - `Syft.Raw(tool, ...)` — escape hatch
 
+## GitLab: publishing an SBOM GitLab actually ingests
+
+GitLab accepts a syft CycloneDX document as a `cyclonedx` report and the job goes green. Then its
+asynchronous post-processing says:
+
+> Required GitLab CycloneDX properties are missing. This will prevent vulnerability scanning and may
+> result in incomplete license and package information.
+
+...and the Dependency List is empty or partial. **A green job is not evidence of ingestion.** syft
+emits no `gitlab:*` properties at all — `metadata.properties` is `null` — and nothing in the pipeline
+says so.
+
+Two steps fix it: pin the schema version GitLab can read, then profile the document.
+
+```csharp
+Target Sbom => _ => _
+    .Description("[Compliance] CycloneDX SBOM, plus a GitLab-ingestible copy")
+    .Executes(() =>
+    {
+        Artifacts.CreateDirectory();
+
+        // 1. The standard document, pinned to the newest schema GitLab ingests (1.4/1.5/1.6 only —
+        //    syft's newer default of 1.7 is hard-rejected).
+        ProcessRunner.Run(Syft.Scan(SyftTool, s => s
+            .SetDirectorySource(RootDirectory)
+            .AddOutputCycloneDxJsonForGitLab(Artifacts / "sbom.cdx.json")));
+
+        // 2. The GitLab-profiled copy. The input is never modified, so keep publishing both.
+        var report = GitLabSbom.ProfileFile(
+            Artifacts / "sbom.cdx.json",
+            Artifacts / "gl-sbom.cdx.json",
+            new GitLabSbomOptions { SourceRoot = RootDirectory });
+
+        Log.Information("{Report}", report);   // "CycloneDX 1.6: 1028 component(s), 1028 with an input file, 3 distinct input file(s)"
+    });
+```
+
+```yaml
+# .gitlab-ci.yml — cyclonedx is an Ultimate-tier report type.
+sbom:
+  script: ./tamp.sh Sbom
+  artifacts:
+    reports:
+      cyclonedx: artifacts/gl-sbom.cdx.json
+```
+
+### What the profile adds, and what it refuses to invent
+
+Only what GitLab's [CycloneDX property taxonomy](https://docs.gitlab.com/development/sec/cyclonedx_property_taxonomy)
+documents:
+
+| Property | Where | Source |
+|---|---|---|
+| `gitlab:meta:schema_version` = `1` | `metadata` | required, constant |
+| `gitlab:dependency_scanning:input_file:path` | every component | `syft:location:0:path`, made repository-relative against `SourceRoot` |
+| `gitlab:dependency_scanning:package_manager:name` | every component | the **lock file name**, via GitLab's own table |
+| `gitlab:dependency_scanning:language:name` | every component | `syft:package:language`, in GitLab's spelling |
+
+**The package manager comes from the lock file, never the PURL type.** A PURL type names the
+registry, not the resolver. On one repository with two JavaScript lock files, syft emitted PURL type
+`npm` for all 1,027 JavaScript components — 899 from `pnpm-lock.yaml`, 128 from `package-lock.json`.
+Inferring from the PURL type mislabels 899 of them.
+
+**Provenance is per component, not per document.** With several lock files, a single document-level
+path is wrong for whichever ecosystem lost. GitLab's taxonomy makes a component value override the
+metadata value, so per-component is the supported shape — the document-level path is still written
+when every component agrees on one file.
+
+**Nothing is guessed.** An unrecognised lock file or language omits that optional property and reports
+it (`UnmappedPackageManagerFiles`, `UnmappedLanguages`). GitLab's ingestion error is generic and
+asynchronous, so a fabricated property that happened to satisfy it would put a wrong fact in a
+security report and never be contradicted.
+
+**A path that can't be made relative fails the build.** `ThrowOnUnrootedPaths` defaults to `true`:
+shipping a document that ingests with its findings anchored to nothing is the failure this exists to
+prevent. Turn it off when some components legitimately sit outside the repository, and read
+`UnrootedLocations` for what was dropped.
+
+**Your Syft document survives.** The pass edits JSON rather than round-tripping through a model, so
+`bom-ref`s, PURLs, dependency edges, licenses, CPEs and every `syft:*` property are preserved
+byte-for-byte. Re-profiling is idempotent, and `gitlab:*` properties the profiler does not own
+(`category`, `reachability`) are left alone.
+
+> **Profile last.** `syft convert` round-trips through syft's internal model, which knows only
+> `syft:*` properties, so it **silently strips every `gitlab:*` property** — verified: a profiled
+> 1,028-component document survives `syft convert` with all components and all 442 dependency edges
+> intact and zero `gitlab:*` properties left. Convert first if you must, then profile, and publish the
+> profiled file. This is also why the profile edits JSON instead of round-tripping through a model:
+> syft's own round-trip is the counterexample.
+
+> **Caveat.** GitLab describes third-party CycloneDX SBOM support as *"technically possible but highly
+> subject to change"*. This targets the documented taxonomy; it is not an officially supported
+> integration. Verify by reading the Dependency List **after asynchronous processing completes** —
+> never by a green job.
+
 ## Secrets handling
 
 `SyftAttestSettings.SetKeyPassword(Secret)` accepts a `Tamp.Core.Secret` and routes it via the `COSIGN_PASSWORD` environment variable — cosign's canonical password channel — not via command-line flag. Even with the env-var route the `Secret` is registered in `CommandPlan.Secrets` so Tamp's process trace masks it in printed output.
