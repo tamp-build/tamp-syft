@@ -48,13 +48,24 @@ public sealed class GitLabSbomTests
             { "name": "syft:package:type", "value": "{{purlType}}" },
             { "name": "syft:package:metadataType", "value": "{{metadataType}}" },
             { "name": "syft:cpe23", "value": "cpe:2.3:a:{{name}}:{{name}}:1.0.0:*:*:*:*:*:*:*" },
-            { "name": "syft:location:0:path", "value": "{{location}}" }
+            { "name": "syft:location:0:path", "value": "{{JsonEscape(location)}}" }
           ]
         }
         """;
 
+    /// <summary>
+    /// JSON-escape a fixture value. Windows locations carry backslashes, and a raw backslash in a
+    /// JSON string is an invalid escape — the fixture has to be valid JSON before the profiler can
+    /// be judged on what it does with it.
+    /// </summary>
+    private static string JsonEscape(string value) => value.Replace("\\", "\\\\");
+
     private static GitLabSbomResult Profile(string json, string? root = Root, bool strict = true)
         => GitLabSbom.Profile(json, new GitLabSbomOptions { SourceRoot = root, ThrowOnUnrootedPaths = strict });
+
+    /// <summary>The guard message has to name the virtual-root case, which is what #11 was about.</summary>
+    private static string RequiredRootMessage
+        => Assert.Throws<ArgumentException>(() => Profile(Bom("1.6"), root: null)).Message;
 
     private static IReadOnlyDictionary<string, string?> Properties(JsonNode? node)
         => ((node?["properties"] as JsonArray) ?? [])
@@ -109,26 +120,39 @@ public sealed class GitLabSbomTests
         Assert.Equal(1, result.ComponentsWithInputFile);
     }
 
-    [Theory]
-    // syft on Windows emits backslashes, and its drive-letter casing does not always match the
-    // configured root (observed: C:\TEMP\... against a root of C:\Temp\...).
-    [InlineData(@"C:\TEMP\repo\frontend\pnpm-lock.yaml", @"C:\Temp\repo", "frontend/pnpm-lock.yaml")]
-    [InlineData(@"C:/repo/go.mod", "C:/repo", "go.mod")]
-    [InlineData("/src/repo/api/package-lock.json", "/src/repo", "api/package-lock.json")]
-    [InlineData("/src/repo/go.mod", "/src/repo/", "go.mod")]
-    // Already relative: syft emitted it relative to the scan root, which is what GitLab wants.
-    [InlineData("go.mod", "/src/repo", "go.mod")]
-    [InlineData("./frontend/yarn.lock", "/src/repo", "frontend/yarn.lock")]
-    public void Relativize_Handles_The_Path_Shapes_Syft_Emits(string location, string root, string expected)
-        => Assert.Equal(expected, GitLabSbom.Relativize(location, root.Replace('\\', '/').TrimEnd('/')));
+    // Path relativization itself now lives in Tamp.Core's RepositoryPath and is tested there
+    // (tamp-syft#11): this file keeps the profiling behaviour that depends on it.
 
     [Theory]
-    [InlineData("/elsewhere/go.mod", "/src/repo")]
-    [InlineData(@"D:\other\repo\go.mod", @"C:\repo")]
-    // The root itself is a directory, not an input file.
-    [InlineData("/src/repo", "/src/repo")]
-    public void Relativize_Refuses_A_Location_Outside_The_Source_Root(string location, string root)
-        => Assert.Null(GitLabSbom.Relativize(location, root.Replace('\\', '/').TrimEnd('/')));
+    // syft records locations against the scan's virtual filesystem, so a lockfile at the root of the
+    // scanned tree is "/pnpm-lock.yaml" and "/" is the root that describes it. That was the one
+    // SourceRoot value the API rejected (#11).
+    [InlineData("/pnpm-lock.yaml", "/", "pnpm-lock.yaml")]
+    [InlineData("/frontend/pnpm-lock.yaml", "/", "frontend/pnpm-lock.yaml")]
+    // Host paths against a real directory, including syft's inconsistent drive-letter casing.
+    [InlineData(@"C:\TEMP\repo\frontend\pnpm-lock.yaml", @"C:\Temp\repo", "frontend/pnpm-lock.yaml")]
+    [InlineData("/src/repo/api/package-lock.json", "/src/repo", "api/package-lock.json")]
+    public void A_Component_Location_Becomes_Repository_Relative(string location, string root, string expected)
+    {
+        var result = Profile(Bom("1.6", Component("left-pad", "npm", "javascript", "javascript-pnpm-lock-entry", location)), root);
+
+        Assert.Equal(expected, Properties((Parsed(result)["components"] as JsonArray)![0])["gitlab:dependency_scanning:input_file:path"]);
+        Assert.Empty(result.UnrootedLocations);
+    }
+
+    [Fact]
+    public void A_Virtual_Root_Profiles_Every_Component()
+    {
+        // The whole #11 reproduction: an SBOM whose paths are the *easiest* case to relativize was
+        // the one that could not be profiled at all.
+        var result = Profile(Bom("1.6",
+            Component("left-pad", "npm", "javascript", "javascript-pnpm-lock-entry", "/pnpm-lock.yaml"),
+            Component("right-pad", "npm", "javascript", "javascript-npm-package-lock-entry", "/api/package-lock.json")), "/");
+
+        Assert.Equal(2, result.ComponentsWithInputFile);
+        Assert.Equal(["api/package-lock.json", "pnpm-lock.yaml"], result.InputFiles);
+        Assert.Empty(result.UnrootedLocations);
+    }
 
     [Fact]
     public void An_Unrooted_Location_Fails_Loudly_By_Default()
@@ -350,6 +374,28 @@ public sealed class GitLabSbomTests
 
         var ex = Assert.Throws<ArgumentException>(() => Profile(json, root: null));
         Assert.Contains("SourceRoot", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_Required_Root_Message_Names_The_Virtual_Root_Case()
+    {
+        // The old message said only "set it to the directory that was scanned", which is the advice
+        // that leads to the dead end in #11: a virtual path is not under any filesystem directory.
+        Assert.Contains("virtual filesystem", RequiredRootMessage, StringComparison.Ordinal);
+        Assert.Contains("/pnpm-lock.yaml", RequiredRootMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_Unrooted_Message_Explains_The_Space_Mismatch_Rather_Than_Repeating_The_Dead_End()
+    {
+        // A virtual location with a filesystem root: the mismatch #11 describes.
+        var json = Bom("1.6", Component("x", "npm", "javascript", "javascript-npm-package-lock-entry", "/pnpm-lock.yaml"));
+
+        var ex = Assert.Throws<InvalidOperationException>(() => Profile(json, root: "/src/repo"));
+
+        Assert.Contains("same space", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("SourceRoot = \"/\"", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("anchors nothing", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
