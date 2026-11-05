@@ -7,6 +7,8 @@ versions follow [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-05 - GitLab-ingestible CycloneDX SBOMs
+
 ### Added
 
 - **A GitLab SBOM profile, so a CycloneDX document GitLab accepts is one GitLab actually ingests** ([#8](https://github.com/tamp-build/tamp-syft/issues/8)). GitLab takes a syft CycloneDX document as a `cyclonedx` report and the job goes green; its asynchronous post-processing then reports *"Required GitLab CycloneDX properties are missing. This will prevent vulnerability scanning and may result in incomplete license and package information"*, and the Dependency List comes back empty or partial. **A green job is not evidence of ingestion.** Measured against syft 1.44, `metadata.properties` is `null` — syft emits no `gitlab:*` properties at all.
