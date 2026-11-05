@@ -87,7 +87,9 @@ public static class GitLabSbom
         if (string.IsNullOrWhiteSpace(options.SourceRoot))
             throw new ArgumentException(
                 "SourceRoot is required: syft records component locations as absolute paths, and GitLab needs them "
-                + "relative to the repository root. Set it to the directory that was scanned.", nameof(options));
+                + "relative to the repository root. It must be expressed in the same space as the locations syft "
+                + "emitted — \"/\" when syft reported against the scan's virtual filesystem (paths like "
+                + "\"/pnpm-lock.yaml\"), or the scanned directory when it reported host paths.", nameof(options));
 
         JsonNode? root;
         try
@@ -115,7 +117,7 @@ public static class GitLabSbom
                 + $"Pin the scan's output to {PreferredSpecVersion} — AddOutputCycloneDxJsonForGitLab(path) does this, "
                 + $"or AddOutput(\"cyclonedx-json@{PreferredSpecVersion}=path\").");
 
-        var normalizedRoot = NormalizeDirectory(options.SourceRoot!);
+        var normalizedRoot = RepositoryPath.NormalizeRoot(options.SourceRoot);
         var inputFiles = new SortedSet<string>(StringComparer.Ordinal);
         var unrooted = new SortedSet<string>(StringComparer.Ordinal);
         var unmappedManagers = new SortedSet<string>(StringComparer.Ordinal);
@@ -133,7 +135,7 @@ public static class GitLabSbom
             string? inputFile = null;
             if (location is not null)
             {
-                inputFile = Relativize(location, normalizedRoot);
+                inputFile = RepositoryPath.Relativize(location, normalizedRoot);
                 if (inputFile is null) unrooted.Add(location);
             }
 
@@ -165,8 +167,11 @@ public static class GitLabSbom
             throw new InvalidOperationException(
                 $"{unrooted.Count} component location(s) are not under SourceRoot '{options.SourceRoot}', so they "
                 + "cannot be made repository-relative and GitLab would not anchor the findings to a file. "
-                + $"First: '{unrooted.First()}'. Point SourceRoot at the directory that was scanned, or set "
-                + "ThrowOnUnrootedPaths = false to omit the property for those components instead.");
+                + $"First: '{unrooted.First()}'. SourceRoot has to be expressed in the same space as the locations "
+                + "syft emitted: a virtual path like '/pnpm-lock.yaml' needs SourceRoot = \"/\", and no filesystem "
+                + "directory will ever contain it. Use the scanned directory only when syft reported host paths. "
+                + "Setting ThrowOnUnrootedPaths = false omits the property for those components instead, which "
+                + "produces a document GitLab ingests and anchors nothing to.");
 
         // metadata: schema_version is required here. The document-level input file is only honest when
         // every component agrees on one; with several lock files the per-component values are the
@@ -259,47 +264,4 @@ public static class GitLabSbom
         return null;
     }
 
-    /// <summary>
-    /// A directory in comparison form: forward slashes, no trailing slash. Deliberately string-based
-    /// rather than <see cref="Path"/>-based — an SBOM produced on a Linux runner is routinely profiled
-    /// on Windows and vice versa, and the OS running this code must not decide how the other's paths parse.
-    /// </summary>
-    private static string NormalizeDirectory(string path)
-        => path.Replace('\\', '/').TrimEnd('/');
-
-    /// <summary>
-    /// <paramref name="location"/> expressed relative to <paramref name="normalizedRoot"/> with
-    /// forward slashes, or <c>null</c> when it is absolute and not under the root. An already-relative
-    /// path is normalized and kept: syft emitted it relative to the scan root, which is what GitLab wants.
-    /// </summary>
-    internal static string? Relativize(string location, string normalizedRoot)
-    {
-        var path = location.Replace('\\', '/').TrimEnd('/');
-        while (path.StartsWith("./", StringComparison.Ordinal)) path = path[2..];
-        if (path.Length == 0) return null;
-
-        if (!IsAbsolute(path)) return path;
-
-        // Windows paths differ in case between syft's output and the configured root (observed:
-        // C:\TEMP\... against C:\Temp\...), so a rooted comparison is case-insensitive when either
-        // side looks like a Windows path. POSIX paths stay case-sensitive.
-        var comparison = LooksWindows(path) || LooksWindows(normalizedRoot)
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-
-        if (normalizedRoot.Length == 0) return null;
-        if (path.Equals(normalizedRoot, comparison)) return null;          // the root itself is not a file
-        if (!path.StartsWith(normalizedRoot + "/", comparison)) return null;
-
-        return path[(normalizedRoot.Length + 1)..];
-    }
-
-    private static bool IsAbsolute(string forwardSlashPath)
-        => forwardSlashPath.StartsWith('/')
-           || forwardSlashPath.StartsWith("//", StringComparison.Ordinal)
-           || (forwardSlashPath.Length >= 3 && char.IsLetter(forwardSlashPath[0])
-               && forwardSlashPath[1] == ':' && forwardSlashPath[2] == '/');
-
-    private static bool LooksWindows(string forwardSlashPath)
-        => forwardSlashPath.Length >= 2 && char.IsLetter(forwardSlashPath[0]) && forwardSlashPath[1] == ':';
 }

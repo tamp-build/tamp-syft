@@ -7,6 +7,22 @@ versions follow [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-05 - SourceRoot of "/" works; path logic moves to core
+
+### Fixed
+
+- **A `SourceRoot` of `/` no longer rejects every location** ([#11](https://github.com/tamp-build/tamp-syft/issues/11)). `NormalizeDirectory("/")` returned the empty string, which `Relativize` then read as "no root supplied" and used to reject every absolute location — so with `ThrowOnUnrootedPaths` at its default, profiling failed with every component reported as unrooted.
+
+  That made the **easiest** case to relativize the one that could not be profiled at all: syft records component locations against the scan's virtual filesystem, so a lockfile at the root of the scanned tree is `/pnpm-lock.yaml` — already repository-relative but for its leading slash — and `/` is the one `SourceRoot` value that describes it. The guard made it worse than unsupported: `"/"` is not null or whitespace, so it passed validation as a supplied root and was then silently treated as an absent one.
+
+- **Both error messages now name the real constraint.** The required-root message said only "set it to the directory that was scanned", which is the advice that leads to the dead end in the issue — a virtual path is not under any filesystem directory. Both messages now say `SourceRoot` must be expressed in the same space as the locations syft emitted, and the unrooted message adds that turning the check off produces a document GitLab ingests and anchors nothing to.
+
+### Changed
+
+- **Path relativization moves to `Tamp.Core`'s `RepositoryPath`** ([#11](https://github.com/tamp-build/tamp-syft/issues/11)), so `Tamp.Core` ≥ **1.20.0** is now required. This wrapper and `Tamp.Grype` each carried a private copy of `NormalizeDirectory` / `Relativize` / `IsAbsolute` / `LooksWindows`, already diverged three ways — this one handled `//` UNC prefixes and the other did not, this one returned null for an unrooted path while the other returned it unchanged, this one treated the root itself as unrooted — while both carried the same `/` bug. One implementation in core fixes it once; every future reporting wrapper needs the same function.
+
+  Mechanism in core, policy here: core answers "relative to that root, or not under it at all", and this wrapper keeps its own decision to omit the property rather than emit a path GitLab cannot anchor. Core also fixed a case neither issue mentioned — a root joined to a path by concatenation (`/src/repo//go.mod`) relativized to `/go.mod`, still absolute.
+
 ## [0.2.0] - 2026-11-05 - GitLab-ingestible CycloneDX SBOMs
 
 ### Added
