@@ -27,6 +27,7 @@ versions follow [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ### Notes
 
+- **Profile last in the chain.** `syft convert` round-trips through syft's internal model, which knows only `syft:*` properties, so it silently strips every `gitlab:*` property — verified: a profiled 1,028-component document survives `syft convert` with all components and all 442 dependency edges intact and zero `gitlab:*` properties left. Convert first, then profile. (This is also why the profile edits JSON rather than round-tripping through a model.)
 - GitLab describes third-party CycloneDX SBOM support as *"technically possible but highly subject to change"*. This profile targets the documented taxonomy; it is not an officially supported integration. The acceptance test is GitLab's Dependency List read back **after asynchronous processing completes** — never a green job.
 
 ## [0.1.2] — 2026-09-27

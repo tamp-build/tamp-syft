@@ -218,6 +218,13 @@ prevent. Turn it off when some components legitimately sit outside the repositor
 byte-for-byte. Re-profiling is idempotent, and `gitlab:*` properties the profiler does not own
 (`category`, `reachability`) are left alone.
 
+> **Profile last.** `syft convert` round-trips through syft's internal model, which knows only
+> `syft:*` properties, so it **silently strips every `gitlab:*` property** — verified: a profiled
+> 1,028-component document survives `syft convert` with all components and all 442 dependency edges
+> intact and zero `gitlab:*` properties left. Convert first if you must, then profile, and publish the
+> profiled file. This is also why the profile edits JSON instead of round-tripping through a model:
+> syft's own round-trip is the counterexample.
+
 > **Caveat.** GitLab describes third-party CycloneDX SBOM support as *"technically possible but highly
 > subject to change"*. This targets the documented taxonomy; it is not an officially supported
 > integration. Verify by reading the Dependency List **after asynchronous processing completes** —
