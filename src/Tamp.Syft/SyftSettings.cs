@@ -116,6 +116,33 @@ public sealed class SyftScanSettings : SyftSettingsBase
     public SyftScanSettings AddOutput(string formatEqualsPath) { Outputs.Add(formatEqualsPath); return this; }
     public SyftScanSettings AddOutputCycloneDxJson(string? toFile = null)
         { Outputs.Add(toFile is null ? "cyclonedx-json" : $"cyclonedx-json={toFile}"); return this; }
+
+    /// <summary>
+    /// CycloneDX JSON pinned to a schema version — <c>cyclonedx-json@&lt;version&gt;</c>. syft emits its
+    /// newest supported schema by default, which a consumer may reject outright: GitLab ingests only
+    /// 1.4, 1.5 and 1.6, and hard-rejected 1.7 when syft moved to it. Pin the version a consumer
+    /// accepts rather than inheriting whatever the installed syft prefers.
+    /// </summary>
+    /// <param name="specVersion">A CycloneDX schema version, e.g. <c>1.6</c>.</param>
+    /// <param name="toFile">Output path; <c>null</c> writes to stdout.</param>
+    public SyftScanSettings AddOutputCycloneDxJson(string specVersion, string? toFile)
+    {
+        if (string.IsNullOrWhiteSpace(specVersion))
+            throw new ArgumentException("specVersion must not be null or whitespace.", nameof(specVersion));
+        var format = $"cyclonedx-json@{specVersion}";
+        Outputs.Add(toFile is null ? format : $"{format}={toFile}");
+        return this;
+    }
+
+    /// <summary>
+    /// CycloneDX JSON pinned to the newest schema GitLab ingests
+    /// (<see cref="GitLabSbom.PreferredSpecVersion"/>). The document still needs
+    /// <see cref="GitLabSbom.Profile(string, GitLabSbomOptions)"/> before GitLab will ingest it — the
+    /// schema version alone leaves <c>metadata.properties</c> empty, which GitLab accepts and then
+    /// reports as missing required properties after the job has already gone green.
+    /// </summary>
+    public SyftScanSettings AddOutputCycloneDxJsonForGitLab(string? toFile = null)
+        => AddOutputCycloneDxJson(GitLabSbom.PreferredSpecVersion, toFile);
     public SyftScanSettings AddOutputCycloneDxXml(string? toFile = null)
         { Outputs.Add(toFile is null ? "cyclonedx-xml" : $"cyclonedx-xml={toFile}"); return this; }
     public SyftScanSettings AddOutputSpdxJson(string? toFile = null)

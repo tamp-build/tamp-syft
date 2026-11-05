@@ -7,6 +7,28 @@ versions follow [SemVer](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A GitLab SBOM profile, so a CycloneDX document GitLab accepts is one GitLab actually ingests** ([#8](https://github.com/tamp-build/tamp-syft/issues/8)). GitLab takes a syft CycloneDX document as a `cyclonedx` report and the job goes green; its asynchronous post-processing then reports *"Required GitLab CycloneDX properties are missing. This will prevent vulnerability scanning and may result in incomplete license and package information"*, and the Dependency List comes back empty or partial. **A green job is not evidence of ingestion.** Measured against syft 1.44, `metadata.properties` is `null` — syft emits no `gitlab:*` properties at all.
+
+  `GitLabSbom.Profile(json, options)` / `GitLabSbom.ProfileFile(input, output, options)` add exactly the properties GitLab's [CycloneDX property taxonomy](https://docs.gitlab.com/development/sec/cyclonedx_property_taxonomy) documents, and nothing else:
+  - `gitlab:meta:schema_version` = `1` in `metadata` (required).
+  - `gitlab:dependency_scanning:input_file:path`, **repository-relative**, on every component (required in `metadata` or per component). syft records locations as absolute paths, so `SourceRoot` is a required option; Windows casing (`C:\TEMP\…` against a root of `C:\Temp\…`), backslashes and already-relative paths are all handled, and the path logic is string-based rather than `Path`-based so an SBOM produced on a Linux runner profiles correctly on Windows and vice versa.
+  - `gitlab:dependency_scanning:package_manager:name` **derived from the lock file, never from the PURL type.** A PURL type names the registry, not the resolver: on one repository with two JavaScript lock files, syft emitted PURL type `npm` for all 1,027 JavaScript components, of which 899 came from `pnpm-lock.yaml` and 128 from `package-lock.json`. Inferring from the PURL type would have mislabelled 899 components. The lock-file table is transcribed from GitLab's own dependency-scanning documentation.
+  - `gitlab:dependency_scanning:language:name` in GitLab's spelling (syft reports `javascript`; GitLab writes `JavaScript`).
+
+  Anything not derivable is **omitted rather than guessed** and reported in the result (`UnmappedPackageManagerFiles`, `UnmappedLanguages`, `UnrootedLocations`): GitLab's error is generic and asynchronous, so a fabricated property that happened to satisfy it would put a wrong fact in a security report and never be contradicted. A location outside `SourceRoot` **fails the build by default** (`ThrowOnUnrootedPaths`) rather than shipping a document that ingests with its findings anchored to nothing.
+
+  Provenance is attached **at component level**, not by assigning one lock file to the whole document — with several lock files a document-level path would be wrong for whichever ecosystem lost, and inherited by any component without its own. GitLab's taxonomy makes a component value override the metadata value, so this is the supported shape. The document-level path is still written when every component agrees on one file.
+
+  The pass edits JSON rather than round-tripping through a model, so `bom-ref`s, PURLs, dependency edges, licenses, CPEs, every `syft:*` property and any field this wrapper has never heard of survive intact — verified against a real 1,028-component document: 442/442 dependency edges and `serialNumber` preserved, zero properties lost. **The input file is never modified**, so the unprofiled syft document stays publishable alongside the profiled copy. Re-profiling is idempotent, and `gitlab:*` properties this profiler does not own (`category`, `reachability`) are left alone.
+
+- **`AddOutputCycloneDxJson(specVersion, toFile)` and `AddOutputCycloneDxJsonForGitLab(toFile)`** — pin the emitted schema natively instead of hand-writing `AddOutput("cyclonedx-json@1.6=…")`. syft emits its newest supported schema by default, which a consumer may reject outright: GitLab ingests only 1.4, 1.5 and 1.6, and hard-rejected 1.7 when syft moved to it. `GitLabSbom.Profile` also refuses an unsupported `specVersion` up front, with the fix in the message.
+
+### Notes
+
+- GitLab describes third-party CycloneDX SBOM support as *"technically possible but highly subject to change"*. This profile targets the documented taxonomy; it is not an officially supported integration. The acceptance test is GitLab's Dependency List read back **after asynchronous processing completes** — never a green job.
+
 ## [0.1.2] — 2026-09-27
 
 ### Fixed
